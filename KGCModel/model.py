@@ -11,6 +11,33 @@ from pykeen.regularizers import Regularizer, LpRegularizer
 from typing import Union, Any, ClassVar, Mapping
 from pykeen.utils import negative_norm_of_sum, tensor_product
 from pykeen.constants import DEFAULT_EMBEDDING_HPO_EMBEDDING_DIM_RANGE
+from pykeen.evaluation import RankBasedEvaluator
+from pykeen.datasets.nations import NATIONS_TRAIN_PATH, NATIONS_TEST_PATH, NATIONS_VALIDATE_PATH
+from pykeen.datasets import FB15k237
+from pykeen.predict import predict_triples
+import networkx as nx
+
+def filter_by_pagerank(data_file, threshold):
+    kg = nx.MultiDiGraph()
+    filtered_triplets = []
+    with open(data_file, 'r') as f:
+        for line in f:
+            head, relation, tail = line.strip().split('\t')
+            kg.add_edge(head, tail, label = relation)
+
+    centrality_scores = nx.degree_centrality(kg)
+    print(centrality_scores)
+
+    for head, tail, relation in kg.edges(data=True):
+        if centrality_scores[head] >= threshold and centrality_scores[tail] >= threshold:
+            filtered_triplets.append((head, relation['label'], tail))
+    
+    with open('train.txt', 'w') as f:
+        for head, relation, tail in filtered_triplets:
+            f.write(f"{head}\t{relation}\t{tail}\n")
+
+    return filtered_triplets
+
 
 def kgcmodel_interaction(
     h: FloatTensor,
@@ -71,14 +98,25 @@ class KGCModel(ERModel):
         )
 
 if __name__ == '__main__':
+    filtered_triplets = filter_by_pagerank(NATIONS_TRAIN_PATH, 0.05)
 
     result_KGCModel = pipeline(
         model=KGCModel,
-        dataset='nations',
-        training_kwargs={'num_epochs':100},
+        model_kwargs={'embedding_dim': 50},
+        training = NATIONS_TRAIN_PATH,
+        testing=NATIONS_TEST_PATH,
+        validation=NATIONS_VALIDATE_PATH,
+        optimizer='Adam',
+        loss='marginranking',
+        loss_kwargs=dict(margin=1),
+        training_kwargs={'num_epochs': 100},
+        training_loop='sLCWA',
+        evaluator = RankBasedEvaluator,
         random_seed=1603073093
     )
     
     print(f"MRR: {result_KGCModel.metric_results.to_flat_dict()['both.realistic.inverse_harmonic_mean_rank']}")
     for k in [1,3,5,10]:
         print(f"Hits@{k} : {result_KGCModel.metric_results.to_flat_dict()['both.realistic.hits_at_'+str(k)]}")
+
+    
