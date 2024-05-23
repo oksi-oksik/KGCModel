@@ -1,11 +1,11 @@
-from pykeen.models import ERModel, TransE, DistMult
+from pykeen.models import ERModel, DistMult
 from pykeen.nn import Embedding
-from pykeen.nn.modules import Interaction, NormBasedInteraction
+from pykeen.nn.modules import NormBasedInteraction
 from torch import FloatTensor
 from pykeen.pipeline import pipeline
 from class_resolver import Hint, HintOrType, OptionalKwargs
 from torch.nn import functional
-from pykeen.nn.init import xavier_uniform_, xavier_uniform_norm_, xavier_normal_norm_
+from pykeen.nn.init import xavier_uniform_, xavier_uniform_norm_
 from pykeen.typing import Constrainer, Initializer
 from pykeen.regularizers import Regularizer, LpRegularizer
 from typing import Union, Any, ClassVar, Mapping
@@ -13,30 +13,27 @@ from pykeen.utils import negative_norm_of_sum, tensor_product
 from pykeen.constants import DEFAULT_EMBEDDING_HPO_EMBEDDING_DIM_RANGE
 from pykeen.evaluation import RankBasedEvaluator
 from pykeen.datasets.nations import NATIONS_TRAIN_PATH, NATIONS_TEST_PATH, NATIONS_VALIDATE_PATH
-from pykeen.datasets import FB15k237
-from pykeen.predict import predict_triples
 import networkx as nx
 
-def filter_by_pagerank(data_file, threshold):
+def filter_by_pagerank(input_data: str, threshold: float, output_data: str = 'train.txt') -> str:
     kg = nx.MultiDiGraph()
     filtered_triplets = []
-    with open(data_file, 'r') as f:
+    with open(input_data, 'r') as f:
         for line in f:
             head, relation, tail = line.strip().split('\t')
             kg.add_edge(head, tail, label = relation)
 
-    centrality_scores = nx.degree_centrality(kg)
-    print(centrality_scores)
+    ranks = nx.pagerank(kg)
 
     for head, tail, relation in kg.edges(data=True):
-        if centrality_scores[head] >= threshold and centrality_scores[tail] >= threshold:
+        if ranks[head] >= threshold and ranks[tail] >= threshold:
             filtered_triplets.append((head, relation['label'], tail))
     
-    with open('train.txt', 'w') as f:
+    with open(output_data, 'w') as f:
         for head, relation, tail in filtered_triplets:
             f.write(f"{head}\t{relation}\t{tail}\n")
-
-    return filtered_triplets
+    
+    return output_data
 
 
 def kgcmodel_interaction(
@@ -60,6 +57,12 @@ class KGCModel(ERModel):
         scoring_fct_norm=dict(type=int, low=1, high=2),
     )
 
+    regularizer_default_kwargs: ClassVar[Mapping[str, Any]] = dict(
+        weight=0.1,
+        p=2.0,
+        normalize=True,
+    )
+
     def __init__(
         self,
         *,
@@ -75,7 +78,7 @@ class KGCModel(ERModel):
     ) -> None:
 
         if regularizer is LpRegularizer and regularizer_kwargs is None:
-            regularizer_kwargs = DistMult.regularizer_default_kwargs
+            regularizer_kwargs = KGCModel.regularizer_default_kwargs
 
         super().__init__(
             interaction=KGCModelInteraction,
@@ -98,12 +101,11 @@ class KGCModel(ERModel):
         )
 
 if __name__ == '__main__':
-    filtered_triplets = filter_by_pagerank(NATIONS_TRAIN_PATH, 0.05)
 
     result_KGCModel = pipeline(
         model=KGCModel,
         model_kwargs={'embedding_dim': 50},
-        training = NATIONS_TRAIN_PATH,
+        training = filter_by_pagerank(NATIONS_TRAIN_PATH, 0.05),
         testing=NATIONS_TEST_PATH,
         validation=NATIONS_VALIDATE_PATH,
         optimizer='Adam',
